@@ -45,22 +45,16 @@ func main() {
 	// log.Printf("Type of %s => %s\n", *obj, t)
 	switch t {
 	case "TABLE":
-		tableDDL, err := getTableInfo(db)
-		if err != nil {
-			log.Fatal(err)
-		}
-		indexDDL, err := getIndexInfo(db)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(strings.Replace(tableDDL, "\"", "", -1))
-		fmt.Println(strings.Replace(indexDDL, "\"", "", -1))
+		tableChan := make(chan string)
+		indexChan := make(chan string)
+		go getTableInfo(db, tableChan)
+		go getIndexInfo(db, indexChan)
+		fmt.Println(strings.Replace(<-tableChan, "\"", "", -1))
+		fmt.Println(strings.Replace(<-indexChan, "\"", "", -1))
 	case "PACKAGE BODY":
-		packageDDL, err := getPackageBody(db)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(packageDDL)
+		packageChan := make(chan string)
+		go getPackageBody(db, packageChan)
+		fmt.Println(<-packageChan)
 	}
 	// log.Println("Done")
 }
@@ -77,26 +71,32 @@ func typeOf(db *sql.DB, name string) (objectType string, err error) {
 	return objectType, err
 }
 
-func getTableInfo(db *sql.DB) (ddl string, err error) {
-	err = db.QueryRow("select dbms_metadata.get_ddl('TABLE', :tbl, :owner) from dual", *obj, *sch).Scan(&ddl)
+func getTableInfo(db *sql.DB, result chan string) {
+	var ddl string
+	err := db.QueryRow("select dbms_metadata.get_ddl('TABLE', :tbl, :owner) from dual", *obj, *sch).Scan(&ddl)
 	if err != nil {
-		return "", err
+		log.Fatalf("Can't get table info: %s", err)
 	}
-	return ddl, err
+	result <- ddl
+	close(result)
 }
 
-func getIndexInfo(db *sql.DB) (ddl string, err error) {
-	err = db.QueryRow("select dbms_metadata.get_dependent_ddl('INDEX', :tbl, :owner) from dual", *obj, *sch).Scan(&ddl)
+func getIndexInfo(db *sql.DB, result chan string) {
+	var ddl string
+	err := db.QueryRow("select dbms_metadata.get_dependent_ddl('INDEX', :tbl, :owner) from dual", *obj, *sch).Scan(&ddl)
 	if err != nil {
-		return "", err
+		log.Fatalf("Can't get table index info: %s", err)
 	}
-	return ddl, err
+	result <- ddl
+	close(result)
 }
 
-func getPackageBody(db *sql.DB) (ddl string, err error) {
-	err = db.QueryRow("select dbms_metadata.get_ddl('PACKAGE_BODY', :tbl, :owner) from dual", *obj, *sch).Scan(&ddl)
+func getPackageBody(db *sql.DB, result chan string) {
+	var ddl string
+	err := db.QueryRow("select dbms_metadata.get_ddl('PACKAGE_BODY', :tbl, :owner) from dual", *obj, *sch).Scan(&ddl)
 	if err != nil {
-		return "", err
+		log.Fatalf("Can't get package body: %s", err)
 	}
-	return ddl, err
+	result <- ddl
+	close(result)
 }
