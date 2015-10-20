@@ -49,8 +49,8 @@ func main() {
 		indexChan := make(chan string)
 		go getTableInfo(db, tableChan)
 		go getIndexInfo(db, indexChan)
-		fmt.Println(strings.Replace(<-tableChan, "\"", "", -1))
-		fmt.Println(strings.Replace(<-indexChan, "\"", "", -1))
+		fmt.Println(strings.Replace(<-tableChan, `"`, ``, -1))
+		fmt.Println(strings.Replace(<-indexChan, `"`, ``, -1))
 	case "PACKAGE BODY":
 		packageChan := make(chan string)
 		go getPackageBody(db, packageChan)
