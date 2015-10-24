@@ -4,9 +4,10 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	_ "github.com/mattn/go-oci8"
 	"log"
 	"strings"
+
+	_ "github.com/mattn/go-oci8"
 )
 
 var (
@@ -33,7 +34,12 @@ func main() {
 
 	// log.Println("Connected")
 
-	_, err = db.Exec("begin dbms_metadata.set_transform_param(dbms_metadata.session_transform, 'SQLTERMINATOR', true); end;")
+	_, err = db.Exec(`
+begin
+  dbms_metadata.set_transform_param(dbms_metadata.session_transform,
+                                    'SQLTERMINATOR',
+                                    true);
+end;`)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -60,11 +66,13 @@ func main() {
 }
 
 func typeOf(db *sql.DB, name string) (objectType string, err error) {
-	err = db.QueryRow(`select object_type
-		                 from dba_objects
-		                where owner = :owner
-		                  and object_name = :object
-		                  and object_type not in ('TABLE PARTITION', 'SYNONYM', 'PACKAGE')`, *sch, *obj).Scan(&objectType)
+	err = db.QueryRow(`
+select object_type
+  from dba_objects
+ where owner = :owner
+   and object_name = :object
+   and object_type not in ('TABLE PARTITION', 'SYNONYM', 'PACKAGE')`,
+		*sch, *obj).Scan(&objectType)
 	if err != nil {
 		return "", err
 	}
@@ -73,7 +81,9 @@ func typeOf(db *sql.DB, name string) (objectType string, err error) {
 
 func getTableInfo(db *sql.DB, result chan string) {
 	var ddl string
-	err := db.QueryRow("select dbms_metadata.get_ddl('TABLE', :tbl, :owner) from dual", *obj, *sch).Scan(&ddl)
+	err := db.QueryRow(
+		`select dbms_metadata.get_ddl('TABLE', :tbl, :owner) from dual`,
+		*obj, *sch).Scan(&ddl)
 	if err != nil {
 		log.Fatalf("Can't get table info: %s", err)
 	}
@@ -83,7 +93,9 @@ func getTableInfo(db *sql.DB, result chan string) {
 
 func getIndexInfo(db *sql.DB, result chan string) {
 	var ddl string
-	err := db.QueryRow("select dbms_metadata.get_dependent_ddl('INDEX', :tbl, :owner) from dual", *obj, *sch).Scan(&ddl)
+	err := db.QueryRow(
+		`select dbms_metadata.get_dependent_ddl('INDEX', :tbl, :owner) from dual`,
+		*obj, *sch).Scan(&ddl)
 	if err != nil {
 		log.Fatalf("Can't get table index info: %s", err)
 	}
@@ -93,7 +105,9 @@ func getIndexInfo(db *sql.DB, result chan string) {
 
 func getPackageBody(db *sql.DB, result chan string) {
 	var ddl string
-	err := db.QueryRow("select dbms_metadata.get_ddl('PACKAGE_BODY', :tbl, :owner) from dual", *obj, *sch).Scan(&ddl)
+	err := db.QueryRow(
+		`select dbms_metadata.get_ddl('PACKAGE_BODY', :tbl, :owner) from dual`,
+		*obj, *sch).Scan(&ddl)
 	if err != nil {
 		log.Fatalf("Can't get package body: %s", err)
 	}
