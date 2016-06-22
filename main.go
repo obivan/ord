@@ -4,113 +4,159 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	"log"
+	"io"
+	"os"
 	"strings"
 
 	_ "github.com/mattn/go-oci8"
 )
 
-var (
-	dsn = flag.String("dsn", "apps/apps@ehqe", "DSN")
-	sch = flag.String("sch", "XXT", "Object schema")
-	obj = flag.String("obj", "", "Object name")
-)
+type dbObjectType int
 
-func main() {
-	flag.Parse()
-
-	*sch = strings.ToUpper(*sch)
-	*obj = strings.ToUpper(*obj)
-
-	db, err := sql.Open("oci8", *dsn)
-	defer db.Close()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// if err := db.Ping(); err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	// log.Println("Connected")
-
-	_, err = db.Exec(`
-begin
-  dbms_metadata.set_transform_param(dbms_metadata.session_transform,
-                                    'SQLTERMINATOR',
-                                    true);
-end;`)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	t, err := typeOf(db, *obj)
-	if err != nil {
-		log.Fatal(err)
-	}
-	// log.Printf("Type of %s => %s\n", *obj, t)
-	switch t {
-	case "TABLE":
-		tableChan := make(chan string)
-		indexChan := make(chan string)
-		go getTableInfo(db, tableChan)
-		go getIndexInfo(db, indexChan)
-		fmt.Println(strings.Replace(<-tableChan, `"`, ``, -1))
-		fmt.Println(strings.Replace(<-indexChan, `"`, ``, -1))
-	case "PACKAGE BODY":
-		packageChan := make(chan string)
-		go getPackageBody(db, packageChan)
-		fmt.Println(<-packageChan)
-	}
-	// log.Println("Done")
+type dbObjectInfo struct {
+	db     *sql.DB
+	schema string
+	name   string
+	typ    dbObjectType
 }
 
-func typeOf(db *sql.DB, name string) (objectType string, err error) {
-	err = db.QueryRow(`
-select object_type
-  from dba_objects
- where owner = :owner
-   and object_name = :object
-   and object_type not in ('TABLE PARTITION', 'SYNONYM', 'PACKAGE')`,
-		*sch, *obj).Scan(&objectType)
+const (
+	illegal dbObjectType = iota
+	table
+	index
+	packageBody
+)
+
+var dbObjectTypes = [...]string{
+	table:       "TABLE",
+	index:       "INDEX",
+	packageBody: "PACKAGE_BODY",
+}
+
+func newDbObjectInfo(db *sql.DB, sch, obj string) (*dbObjectInfo, error) {
+	var rawType string
+	sch, obj = strings.ToUpper(sch), strings.ToUpper(obj)
+	err := db.QueryRow(`
+		select object_type
+		  from dba_objects
+		 where owner = :owner
+		   and object_name = :object
+		   and object_type not in ('TABLE PARTITION', 'SYNONYM', 'PACKAGE')`,
+		sch, obj).Scan(&rawType)
+	if err != nil {
+		return nil, err
+	}
+	return &dbObjectInfo{
+		db:     db,
+		schema: sch,
+		name:   obj,
+		typ:    lookupType(rawType),
+	}, nil
+}
+
+func (o dbObjectInfo) getDDL() (string, error) {
+	var ddl string
+	err := o.db.QueryRow(
+		"select dbms_metadata.get_ddl(:typ, :tbl, :owner) from dual",
+		o.typ.String(), o.name, o.schema).Scan(&ddl)
 	if err != nil {
 		return "", err
 	}
-	return objectType, err
+	return ddl, nil
 }
 
-func getTableInfo(db *sql.DB, result chan string) {
+func (o dbObjectInfo) getDependentDDL(typ dbObjectType) (string, error) {
 	var ddl string
-	err := db.QueryRow(
-		`select dbms_metadata.get_ddl('TABLE', :tbl, :owner) from dual`,
-		*obj, *sch).Scan(&ddl)
+	err := o.db.QueryRow(
+		"select dbms_metadata.get_dependent_ddl(:typ, :tbl, :owner) from dual",
+		typ.String(), o.name, o.schema).Scan(&ddl)
 	if err != nil {
-		log.Fatalf("Can't get table info: %s", err)
+		return "", err
 	}
-	result <- ddl
-	close(result)
+	return ddl, nil
 }
 
-func getIndexInfo(db *sql.DB, result chan string) {
-	var ddl string
-	err := db.QueryRow(
-		`select dbms_metadata.get_dependent_ddl('INDEX', :tbl, :owner) from dual`,
-		*obj, *sch).Scan(&ddl)
-	if err != nil {
-		log.Fatalf("Can't get table index info: %s", err)
+func (o dbObjectInfo) String() string {
+	switch o.typ {
+	case packageBody:
+		ddl, err := o.getDDL()
+		if err != nil {
+			closeAndExit(o.db, 1, err)
+		}
+		return ddl
+	case table:
+		tableChan := make(chan string)
+		indexChan := make(chan string)
+		go func() {
+			ddl, _ := o.getDDL()
+			tableChan <- ddl
+			close(tableChan)
+		}()
+		go func() {
+			ddl, _ := o.getDependentDDL(index)
+			indexChan <- ddl
+			close(indexChan)
+		}()
+		return fmt.Sprintf("%s\n%s", <-tableChan, <-indexChan)
 	}
-	result <- ddl
-	close(result)
+	return ""
 }
 
-func getPackageBody(db *sql.DB, result chan string) {
-	var ddl string
-	err := db.QueryRow(
-		`select dbms_metadata.get_ddl('PACKAGE_BODY', :tbl, :owner) from dual`,
-		*obj, *sch).Scan(&ddl)
-	if err != nil {
-		log.Fatalf("Can't get package body: %s", err)
+func (t dbObjectType) String() string {
+	return dbObjectTypes[t]
+}
+
+func lookupType(raw string) dbObjectType {
+	// "PACKAGE BODY" must be "PACKAGE_BODY" in dbms_metadata.get_ddl
+	if raw == "PACKAGE BODY" {
+		return packageBody
 	}
-	result <- ddl
-	close(result)
+	for i, v := range dbObjectTypes {
+		if v == raw {
+			return dbObjectType(i)
+		}
+	}
+	return illegal
+}
+
+func closeAndExit(db io.Closer, code int, message ...interface{}) {
+	for _, m := range message {
+		fmt.Fprintln(os.Stderr, m)
+	}
+	if err := db.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "db.Close() error: %s\n", err)
+	}
+	os.Exit(code)
+}
+
+func main() {
+	var (
+		dsn = flag.String("dsn", "apps/apps@ehqe", "DSN")
+		sch = flag.String("sch", "XXT", "Object schema")
+		obj = flag.String("obj", "", "Object name")
+	)
+	flag.Parse()
+
+	db, err := sql.Open("oci8", *dsn)
+	defer closeAndExit(db, 0)
+	if err != nil {
+		closeAndExit(db, 1, err)
+	}
+
+	_, err = db.Exec(`
+		begin
+			dbms_metadata.set_transform_param(dbms_metadata.session_transform,
+				'SQLTERMINATOR',
+				true);
+		end;`)
+	if err != nil {
+		closeAndExit(db, 1, err)
+	}
+
+	info, err := newDbObjectInfo(db, *sch, *obj)
+	if err != nil {
+		closeAndExit(db, 1, err)
+	}
+
+	fmt.Println(info)
 }
