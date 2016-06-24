@@ -130,14 +130,15 @@ func closeAndExit(db io.Closer, code int, message ...interface{}) {
 }
 
 func main() {
-	var (
-		dsn = flag.String("dsn", "apps/apps@ehqe", "DSN")
-		sch = flag.String("sch", "XXT", "Object schema")
-		obj = flag.String("obj", "", "Object name")
-	)
+	var flags struct {
+		dsn, sch, obj string
+	}
+	flag.StringVar(&flags.dsn, "dsn", "apps/apps@ehqe", "DSN")
+	flag.StringVar(&flags.sch, "sch", "XXT", "Object schema")
+	flag.StringVar(&flags.obj, "obj", "", "Object name")
 	flag.Parse()
 
-	db, err := sql.Open("oci8", *dsn)
+	db, err := sql.Open("oci8", flags.dsn)
 	defer closeAndExit(db, 0)
 	if err != nil {
 		closeAndExit(db, 1, err)
@@ -153,7 +154,7 @@ func main() {
 		closeAndExit(db, 1, err)
 	}
 
-	info, err := newDbObjectInfo(db, *sch, *obj)
+	info, err := newDbObjectInfo(db, flags.sch, flags.obj)
 	if err != nil {
 		closeAndExit(db, 1, err)
 	}
